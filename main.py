@@ -13,50 +13,37 @@ API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID"))
 
-# مسار ملف تخزين بيانات المستخدمين والحسابات
 DATA_FILE = "user_data.json"
 
-# قاموس لتخزين كائنات العملاء (الحسابات)
-# {account_id: pyrogram.Client}
 user_clients = {}
-
-# قاموس لتخزين حالة الجدولة التلقائية لكل حساب
-# {user_id: {account_id: is_scheduled_on}}
 scheduling_status = {}
-
-# قاموس لتخزين مهام الجدولة النشطة
-# {account_id: asyncio.Task}
 scheduled_tasks = {}
 
 # ----------------------------------------------------------------------
-# وظائف مساعدة لإدارة البيانات
+# إدارة البيانات
 # ----------------------------------------------------------------------
 
 def load_data():
-    """تحميل بيانات المستخدمين والحسابات من ملف JSON."""
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'r') as f:
             return json.load(f)
     return {}
 
 def save_data(data):
-    """حفظ بيانات المستخدمين والحسابات إلى ملف JSON."""
     with open(DATA_FILE, 'w') as f:
         json.dump(data, f, indent=4)
 
 def get_user_accounts(user_id):
-    """الحصول على قائمة حسابات المستخدم."""
     data = load_data()
     return data.get(str(user_id), {}).get("accounts", {})
 
 def add_account_to_user(user_id, account_id, session_string):
-    """إضافة حساب جديد للمستخدم."""
     data = load_data()
     user_id_str = str(user_id)
-    
+
     if user_id_str not in data:
         data[user_id_str] = {"accounts": {}}
-    
+
     data[user_id_str]["accounts"][str(account_id)] = {
         "session_string": session_string,
         "is_active": True
@@ -64,11 +51,10 @@ def add_account_to_user(user_id, account_id, session_string):
     save_data(data)
 
 def remove_account_from_user(user_id, account_id):
-    """إزالة حساب من المستخدم."""
     data = load_data()
     user_id_str = str(user_id)
     account_id_str = str(account_id)
-    
+
     if user_id_str in data and account_id_str in data[user_id_str]["accounts"]:
         del data[user_id_str]["accounts"][account_id_str]
         save_data(data)
@@ -76,29 +62,152 @@ def remove_account_from_user(user_id, account_id):
     return False
 
 # ----------------------------------------------------------------------
-# وظائف الجدولة التلقائية
+# الجدولة
 # ----------------------------------------------------------------------
 
 async def schedule_group_creation(user_id, account_id, user_client):
-    """مهمة الجدولة التلقائية لإنشاء المجموعات كل 20 دقيقة."""
-    # 20 دقيقة = 1200 ثانية
-    SCHEDULE_INTERVAL = 1200 
-    
+    SCHEDULE_INTERVAL = 1200
+
     while True:
-        # التحقق من حالة الجدولة قبل الانتظار
         is_scheduled = scheduling_status.get(user_id, {}).get(account_id, False)
         if not is_scheduled:
-            print(f"Scheduling for account {account_id} is off. Task exiting.")
-            # إزالة المهمة من القاموس عند الخروج
             if account_id in scheduled_tasks:
                 del scheduled_tasks[account_id]
             break
-        
-        # الانتظار لمدة 20 دقيقة
-        print(f"Account {account_id}: Waiting for {SCHEDULE_INTERVAL} seconds...")
-        await asyncio.sleep(SCHEDULE_INTERVAL) 
-        
-        # التحقق مرة أخرى بعد الانتظار
+
+        await asyncio.sleep(SCHEDULE_INTERVAL)
+
+        is_scheduled = scheduling_status.get(user_id, {}).get(account_id, False)
+        if not is_scheduled:
+            continue
+
+        try:
+            group_title = f"مجموعة تلقائية - {account_id}"
+            new_group = await user_client.create_supergroup(group_title)
+            group_id = new_group.id
+
+            for i in range(1, 11):
+                await user_client.send_message(group_id, f"رسالة تلقائية رقم {i}")
+                await asyncio.sleep(1)
+
+        except Exception as e:
+            print(f"خطأ في الجدولة: {e}")
+
+# ----------------------------------------------------------------------
+# عملاء المستخدمين
+# ----------------------------------------------------------------------
+
+async def start_user_client(user_id, account_id, session_string):
+    try:
+        client = Client(
+            name=f"user_{user_id}_{account_id}",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            session_string=session_string,
+            in_memory=True
+        )
+        await client.start()
+        user_clients[account_id] = client
+        return True
+    except Exception as e:
+        print(e)
+        return False
+
+async def stop_user_client(account_id):
+    if account_id in scheduled_tasks:
+        scheduled_tasks[account_id].cancel()
+        del scheduled_tasks[account_id]
+
+    if account_id in user_clients:
+        await user_clients[account_id].stop()
+        del user_clients[account_id]
+
+async def initialize_clients():
+    data = load_data()
+    for user_id_str, user_data in data.items():
+        user_id = int(user_id_str)
+        for account_id_str, acc in user_data.get("accounts", {}).items():
+            await start_user_client(
+                user_id,
+                int(account_id_str),
+                acc["session_string"]
+            )
+
+# ----------------------------------------------------------------------
+# البوت
+# ----------------------------------------------------------------------
+
+bot = Client(
+    "telegram_manager_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
+@bot.on_message(filters.command("start") & filters.private)
+async def start_command(client, message):
+    await message.reply_text("مرحباً بك 👋")
+
+@bot.on_message(filters.command("add_account") & filters.private)
+async def add_account_command(client, message):
+    await message.reply_text("أرسل Session String")
+
+# ✅✅✅ السطر المصحح هنا
+@bot.on_message(filters.text & filters.private & ~filters.regex("^/"))
+async def handle_session_string(client, message):
+    user_id = message.from_user.id
+    session_string = message.text.strip()
+
+    if len(session_string) < 100:
+        return
+
+    temp_client = Client(
+        name=f"temp_{user_id}",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        session_string=session_string,
+        in_memory=True
+    )
+
+    try:
+        await temp_client.start()
+        me = await temp_client.get_me()
+        await temp_client.stop()
+
+        add_account_to_user(user_id, me.id, session_string)
+        await start_user_client(user_id, me.id, session_string)
+
+        await message.reply_text(f"تم إضافة الحساب @{me.username}")
+
+    except Exception as e:
+        await message.reply_text(f"خطأ: {e}")
+
+@bot.on_message(filters.command("my_accounts") & filters.private)
+async def my_accounts_command(client, message):
+    accounts = get_user_accounts(message.from_user.id)
+    if not accounts:
+        await message.reply_text("لا يوجد حسابات")
+        return
+
+    text = "حساباتك:\n"
+    for acc in accounts:
+        text += f"- {acc}\n"
+
+    await message.reply_text(text)
+
+# ----------------------------------------------------------------------
+# التشغيل
+# ----------------------------------------------------------------------
+
+async def main():
+    if not os.path.exists(DATA_FILE):
+        save_data({})
+    await initialize_clients()
+    await bot.start()
+    await asyncio.Future()
+
+if __name__ == "__main__":
+    asyncio.run(main())        # التحقق مرة أخرى بعد الانتظار
         is_scheduled = scheduling_status.get(user_id, {}).get(account_id, False)
         if not is_scheduled:
             print(f"Scheduling for account {account_id} was turned off during sleep. Skipping creation.")
